@@ -1,166 +1,195 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>CMD KEY開啟器</title>
-  <style>
-    body {
-      background-color: #000;
-      color: #0f0;
-      font-family: Consolas, monospace;
-      padding: 20px;
-    }
-    input, textarea {
-      background-color: #000;
-      color: #0f0;
-      border: 1px solid #0f0;
-      padding: 6px;
-      font-family: Consolas, monospace;
-      width: 100%;
-    }
-    button {
-      background-color: #000;
-      color: #0f0;
-      border: 1px solid #0f0;
-      padding: 6px 10px;
-      font-family: Consolas, monospace;
-      cursor: pointer;
-    }
-    button:hover {
-      background-color: #0f0;
-      color: #000;
-    }
-    .line { margin: 4px 0; }
-    .mapping { margin-left: 2ch; }
-    hr { border: 1px dashed #0f0; margin: 12px 0; }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache">
+<title>CMD Launcher +</title>
+<style>
+  body { background-color: #000; color: #0f0; font-family: 'Courier New', monospace; padding: 20px; }
+  input, button, textarea { background: #111; color: #0f0; border: 1px solid #0f0; font-family: inherit; padding: 5px; margin: 2px; }
+  .hidden { display: none; }
+  #log { margin-top: 20px; white-space: pre-wrap; }
+  textarea { width: 100%; }
+</style>
 </head>
 <body>
-  <div>CMD 字串開啟器 v1.0</div>
-  <hr>
-  <div class="line">> 輸入指令或網址：</div>
-  <div class="line"><input id="inputKey" placeholder="例如：gh 或 google"></div>
-  <div class="line"><button id="openBtn">執行</button></div>
-  <div class="line" style="font-size:12px;">提示：輸入 key 會開啟對應網址；否則會嘗試打開或搜尋。</div>
 
-  <hr>
-  <div class="line">> 新增 / 修改 映射：</div>
-  <div class="line">key：<input id="newKey" placeholder="gh" style="width:120px;display:inline-block"> url：<input id="newUrl" placeholder="https://github.com" style="width:60%"> <button id="addBtn">新增</button></div>
-  <div class="line"><button id="exportBtn">匯出</button> <button id="importBtn">匯入</button> <button id="clearBtn">清除全部</button></div>
+<div id="auth">
+  <p>> 輸入帳號名稱與 GitHub Token 登入：</p>
+  <input type="text" id="username" placeholder="帳號名稱">
+  <input type="password" id="token" placeholder="GitHub Token (gist 權限)">
+  <button onclick="login()">登入</button>
+</div>
 
-  <textarea id="importArea" rows="3" placeholder='貼上 JSON'></textarea>
+<div id="main" class="hidden">
+  <p>> 歡迎，<span id="currentUser"></span></p>
+  <input type="text" id="command" placeholder="> 輸入指令或網址" onkeydown="if(event.key==='Enter') executeCommand()">
+  <button onclick="executeCommand()">執行</button>
 
-  <hr>
-  <div class="line">> 目前映射：</div>
-  <div id="mappingsContainer"></div>
+  <h3>> 映射設定</h3>
+  <input type="text" id="keyInput" placeholder="key">
+  <input type="text" id="urlInput" placeholder="URL（可用 %s）">
+  <label><input type="checkbox" id="hiddenInput"> 隱藏</label>
+  <button onclick="addMapping()">新增</button>
 
-  <script>
-    const storageKey = 'cmd_url_mappings';
-    const defaultMappings = {
-      "gh": "https://github.com/",
-      "g": "https://www.google.com/search?q=%s",
-      "yt": "https://www.youtube.com/results?search_query=%s"
-    };
+  <h3>> JSON 匯入 / 匯出</h3>
+  <button onclick="exportJSON()">匯出 JSON</button>
+  <textarea id="importArea" rows="3" placeholder="貼上 JSON 後按匯入"></textarea>
+  <button onclick="importJSON()">匯入 JSON</button>
 
-    function loadMappings() {
-      try {
-        const raw = localStorage.getItem(storageKey);
-        return raw ? JSON.parse(raw) : { ...defaultMappings };
-      } catch (e) {
-        return { ...defaultMappings };
-      }
+  <pre id="list"></pre>
+  <div id="log"></div>
+  <button onclick="logout()">登出</button>
+</div>
+
+<script>
+let mappings = {};
+let currentUser = null;
+let githubToken = null;
+let gistId = null;
+
+function log(msg) {
+  const logBox = document.getElementById('log');
+  const time = new Date().toLocaleTimeString();
+  logBox.textContent += `\n[${time}] ${msg}`;
+  logBox.scrollTop = logBox.scrollHeight;
+}
+
+async function login() {
+  currentUser = document.getElementById('username').value.trim();
+  githubToken = document.getElementById('token').value.trim();
+  if (!currentUser || !githubToken) return alert('請輸入帳號與 Token');
+
+  document.getElementById('auth').classList.add('hidden');
+  document.getElementById('main').classList.remove('hidden');
+  document.getElementById('currentUser').textContent = currentUser;
+
+  await loadGist();
+  renderList();
+  log('登入成功，映射已載入');
+}
+
+async function loadGist() {
+  try {
+    const res = await fetch('https://api.github.com/gists', {
+      headers: { 'Authorization': `token ${githubToken}` }
+    });
+    const gists = await res.json();
+    const userGist = gists.find(g => g.description === `cmd_mappings_${currentUser}`);
+    if (userGist) {
+      gistId = userGist.id;
+      const fileName = Object.keys(userGist.files)[0];
+      const content = await (await fetch(userGist.files[fileName].raw_url)).text();
+      mappings = JSON.parse(content);
+      log('已從雲端載入映射');
+    } else {
+      await saveGist(true);
     }
+  } catch (e) {
+    log('雲端載入失敗，使用本地或空映射');
+    mappings = JSON.parse(localStorage.getItem('cmd_mappings') || '{}');
+  }
+}
 
-    function saveMappings(m) {
-      localStorage.setItem(storageKey, JSON.stringify(m));
+async function saveGist(createNew=false) {
+  const payload = {
+    description: `cmd_mappings_${currentUser}`,
+    public: false,
+    files: { [`${currentUser}.json`]: { content: JSON.stringify(mappings, null, 2) } }
+  };
+  try {
+    let url = 'https://api.github.com/gists';
+    let method = 'POST';
+    if (!createNew && gistId) {
+      url = `https://api.github.com/gists/${gistId}`;
+      method = 'PATCH';
     }
+    const res = await fetch(url, {
+      method,
+      headers: { 'Authorization': `token ${githubToken}` },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    gistId = data.id;
+    log('☁️ 雲端同步完成');
+  } catch(e) {
+    log('❌ 雲端同步失敗');
+  }
+  localStorage.setItem('cmd_mappings', JSON.stringify(mappings));
+}
 
-    let mappings = loadMappings();
+function renderList() {
+  const list = document.getElementById('list');
+  let output = Object.entries(mappings)
+    .filter(([_, v]) => !v.hidden)
+    .map(([k, v]) => `${k.padEnd(10)} → ${v.url}`)
+    .join('\n');
+  list.textContent = output || '(無映射)';
+}
 
-    const mappingsContainer = document.getElementById('mappingsContainer');
-    const inputKey = document.getElementById('inputKey');
-    const openBtn = document.getElementById('openBtn');
-    const newKey = document.getElementById('newKey');
-    const newUrl = document.getElementById('newUrl');
+function addMapping() {
+  const key = document.getElementById('keyInput').value.trim();
+  const url = document.getElementById('urlInput').value.trim();
+  const hidden = document.getElementById('hiddenInput').checked;
+  if (!key || !url) return alert('請輸入完整內容');
+  mappings[key] = { url, hidden };
+  renderList();
+  saveGist();
+}
 
-    function render() {
-      mappingsContainer.innerHTML = '';
-      const keys = Object.keys(mappings).sort();
-      if (keys.length === 0) {
-        mappingsContainer.innerHTML = '<div class="mapping">(無)</div>';
-        return;
-      }
-      keys.forEach(k => {
-        const v = mappings[k];
-        const div = document.createElement('div');
-        div.className = 'mapping';
-        div.innerHTML = `[${k}] -> ${v}`;
-        mappingsContainer.appendChild(div);
-      });
-    }
+function executeCommand() {
+  const input = document.getElementById('command').value.trim();
+  if (!input) return;
+  const keys = Object.keys(mappings);
+  const match = keys.sort((a,b)=>b.length-a.length).find(k => input.startsWith(k));
+  if (match) {
+    const entry = mappings[match];
+    const arg = input.slice(match.length).trim();
+    let url = entry.url.includes('%s') ? entry.url.replace('%s', encodeURIComponent(arg)) : entry.url;
+    if (!/^https?:\/\//.test(url)) url = 'https://' + url;
+    window.open(url, '_blank');
+    log(`開啟：${url}`);
+  } else if (/^https?:\/\//.test(input) || input.includes('.')) {
+    window.open(input.startsWith('http') ? input : 'https://' + input, '_blank');
+    log(`直接開啟：${input}`);
+  } else {
+    const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(input)}`;
+    window.open(searchUrl, '_blank');
+    log(`搜尋：${input}`);
+  }
+  document.getElementById('command').value = '';
+}
 
-    function normalizeUrl(u) {
-      if (!u) return '';
-      if (u.startsWith('http')) return u;
-      if (/^[\w.-]+\.[a-z]{2,}/i.test(u)) return 'https://' + u;
-      return u;
-    }
+function exportJSON() {
+  const blob = new Blob([JSON.stringify(mappings, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${currentUser}_mappings.json`;
+  a.click();
+}
 
-    function openForKey(rawKey) {
-      const key = rawKey.trim();
-      if (!key) return;
-      if (mappings[key]) {
-        let url = mappings[key].replace(/%s/g, encodeURIComponent(key));
-        window.open(normalizeUrl(url), '_blank');
-        return;
-      }
-      if (/^https?:/i.test(key) || /^www\./i.test(key)) {
-        window.open(normalizeUrl(key), '_blank');
-        return;
-      }
-      window.open('https://www.google.com/search?q=' + encodeURIComponent(key), '_blank');
-    }
+function importJSON() {
+  try {
+    const obj = JSON.parse(document.getElementById('importArea').value);
+    mappings = obj;
+    renderList();
+    saveGist();
+    log('✅ JSON 匯入成功並同步雲端');
+  } catch(e) {
+    alert('JSON 格式錯誤');
+  }
+}
 
-    openBtn.onclick = () => openForKey(inputKey.value);
-    inputKey.onkeydown = e => { if (e.key === 'Enter') openForKey(inputKey.value); };
-
-    document.getElementById('addBtn').onclick = () => {
-      const k = newKey.value.trim();
-      const u = newUrl.value.trim();
-      if (!k || !u) return alert('請輸入 key 與 url');
-      mappings[k] = u;
-      saveMappings(mappings);
-      render();
-    };
-
-    document.getElementById('exportBtn').onclick = () => {
-      const blob = new Blob([JSON.stringify(mappings, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = 'cmd_mappings.json';
-      a.click();
-      URL.revokeObjectURL(url);
-    };
-
-    document.getElementById('importBtn').onclick = () => {
-      try {
-        const obj = JSON.parse(document.getElementById('importArea').value);
-        mappings = obj;
-        saveMappings(mappings);
-        render();
-      } catch (e) { alert('匯入失敗'); }
-    };
-
-    document.getElementById('clearBtn').onclick = () => {
-      if (confirm('確定清除？')) {
-        mappings = {};
-        saveMappings(mappings);
-        render();
-      }
-    };
-
-    render();
-  </script>
+function logout() {
+  currentUser = null;
+  githubToken = null;
+  gistId = null;
+  mappings = {};
+  document.getElementById('auth').classList.remove('hidden');
+  document.getElementById('main').classList.add('hidden');
+  log('已登出');
+}
+</script>
 </body>
 </html>
